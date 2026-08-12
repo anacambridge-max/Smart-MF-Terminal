@@ -1,150 +1,264 @@
 import { type MarketData } from "./scoring";
 import { SECTORS } from "./sectors";
 
-// Seeded PRNG for deterministic but realistic market data
-// Changes daily based on date
-function seededRandom(seed: number): () => number {
-  let s = seed;
-  return () => {
-    s = (s * 1103515245 + 12345) & 0x7fffffff;
-    return s / 0x7fffffff;
+type NseRow = Record<string, unknown>;
+type YahooChart = { chart?: { result?: Array<{ meta?: { regularMarketPrice?: number; previousClose?: number }; indicators?: { quote?: Array<{ close?: Array<number | null>; high?: Array<number | null>; low?: Array<number | null> }> } }> } };
+
+type History = { closes: number[]; highs: number[]; lows: number[] };
+
+const NSE_ALIASES: Record<string, string[]> = {
+  nifty50: ["NIFTY 50"],
+  niftynext50: ["NIFTY NEXT 50"],
+  niftymidcap150: ["NIFTY MIDCAP 150"],
+  niftysmallcap250: ["NIFTY SMALLCAP 250"],
+  nifty500: ["NIFTY 500"],
+  niftybank: ["NIFTY BANK"],
+  niftyfin: ["NIFTY FINANCIAL SERVICES"],
+  niftyit: ["NIFTY IT"],
+  niftypharma: ["NIFTY PHARMA"],
+  niftyauto: ["NIFTY AUTO"],
+  niftyfmcg: ["NIFTY FMCG"],
+  niftymetal: ["NIFTY METAL"],
+  niftyhealthcare: ["NIFTY HEALTHCARE"],
+  niftyinfra: ["NIFTY INFRASTRUCTURE"],
+  niftyrealty: ["NIFTY REALTY"],
+};
+
+const YAHOO_SYMBOLS: Record<string, string> = {
+  nifty50: "%5ENSEI",
+  niftynext50: "NIFTYNXT50.NS",
+  niftymidcap150: "NIFTYMIDCAP150.NS",
+  niftysmallcap250: "NIFTYSMLCAP250.NS",
+  nifty500: "^CRSLDX",
+  niftybank: "%5ENSEBANK",
+  niftyfin: "NIFTYFINSERVICE.NS",
+  niftyit: "%5ECNXIT",
+  niftypharma: "%5ECNXPHARMA",
+  niftyauto: "%5ECNXAUTO",
+  niftyfmcg: "%5ECNXFMCG",
+  niftymetal: "%5ECNXMETAL",
+  niftyhealthcare: "NIFTY_HEALTHCARE.NS",
+  niftyinfra: "NIFTY_INFRA.NS",
+  niftyrealty: "%5ECNXREALTY",
+};
+
+const num = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string") return null;
+  const n = Number(value.replace(/,/g, "").trim());
+  return Number.isFinite(n) ? n : null;
+};
+
+const round = (value: number, digits = 2) => Number(value.toFixed(digits));
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+
+function sma(values: number[], period: number): number {
+  if (values.length < period) return values[values.length - 1] ?? 0;
+  const slice = values.slice(-period);
+  return slice.reduce((a, b) => a + b, 0) / period;
+}
+
+function rsi(values: number[], period = 14): number {
+  if (values.length <= period) return 50;
+  let gains = 0;
+  let losses = 0;
+  for (let i = values.length - period; i < values.length; i++) {
+    const delta = values[i] - values[i - 1];
+    if (delta >= 0) gains += delta;
+    else losses -= delta;
+  }
+  if (losses === 0) return 100;
+  const rs = (gains / period) / (losses / period);
+  return 100 - 100 / (1 + rs);
+}
+
+function ema(values: number[], period: number): number[] {
+  if (!values.length) return [];
+  const k = 2 / (period + 1);
+  const out = [values[0]];
+  for (let i = 1; i < values.length; i++) out.push(values[i] * k + out[i - 1] * (1 - k));
+  return out;
+}
+
+function macd(values: number[]) {
+  const fast = ema(values, 12);
+  const slow = ema(values, 26);
+  const line = values.map((_, i) => fast[i] - slow[i]);
+  const signal = ema(line, 9);
+  const last = line.at(-1) ?? 0;
+  const sig = signal.at(-1) ?? 0;
+  return { line: last, signal: sig, histogram: last - sig };
+}
+
+function adxApprox(history: History, period = 14): number {
+  if (history.closes.length < period + 1) return 20;
+  const start = Math.max(1, history.closes.length - period);
+  let trSum = 0;
+  let directional = 0;
+  for (let i = start; i < history.closes.length; i++) {
+    const high = history.highs[i] ?? history.closes[i];
+    const low = history.lows[i] ?? history.closes[i];
+    const prev = history.closes[i - 1];
+    trSum += Math.max(high - low, Math.abs(high - prev), Math.abs(low - prev));
+    directional += Math.abs(history.closes[i] - prev);
+  }
+  return clamp((directional / Math.max(trSum, 1)) * 100, 0, 60);
+}
+
+function historyMetrics(history: History) {
+  const closes = history.closes;
+  const current = closes.at(-1) ?? 0;
+  const previous = closes.at(-2) ?? current;
+  const m = macd(closes);
+  const high52w = Math.max(...closes.slice(-252));
+  const low52w = Math.min(...closes.slice(-252));
+  const change = (lookback: number) => closes.length > lookback ? ((current / closes.at(-lookback - 1)!)-1)*100 : 0;
+  return {
+    rsi14: rsi(closes),
+    macd: m.line,
+    macdSignal: m.signal,
+    macdHistogram: m.histogram,
+    dma20: sma(closes, 20),
+    dma50: sma(closes, 50),
+    dma100: sma(closes, 100),
+    dma200: sma(closes, 200),
+    adx: adxApprox(history),
+    high52w,
+    low52w,
+    weekChange: change(5),
+    monthChange: change(21),
+    threeMonthChange: change(63),
+    sixMonthChange: change(126),
+    yearChange: change(252),
+    dayHigh: history.highs.at(-1) ?? current,
+    dayLow: history.lows.at(-1) ?? current,
+    previous,
   };
 }
 
-function dateSeed(): number {
-  const now = new Date();
-  return now.getFullYear() * 10000 + (now.getMonth() + 1) * 100 + now.getDate();
+async function fetchNseIndices(): Promise<{ rows: NseRow[]; fetchedAt: string }> {
+  const headers = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/126 Safari/537.36",
+    Accept: "application/json,text/plain,*/*",
+    Referer: "https://www.nseindia.com/",
+    "Accept-Language": "en-US,en;q=0.9",
+  };
+  const warm = await fetch("https://www.nseindia.com/", { cache: "no-store", headers });
+  if (!warm.ok) throw new Error(`NSE warm-up failed: ${warm.status}`);
+  const response = await fetch("https://www.nseindia.com/api/allIndices", { cache: "no-store", headers });
+  if (!response.ok) throw new Error(`NSE allIndices failed: ${response.status}`);
+  const json = await response.json() as { data?: NseRow[] };
+  if (!Array.isArray(json.data) || !json.data.length) throw new Error("NSE returned no index data");
+  return { rows: json.data, fetchedAt: new Date().toISOString() };
 }
 
-// Base levels for each sector index (approximate realistic levels)
-const BASE_LEVELS: Record<string, number> = {
-  nifty50: 24500,
-  niftynext50: 62000,
-  niftymidcap150: 19500,
-  niftysmallcap250: 16800,
-  nifty500: 22400,
-  niftybank: 51200,
-  niftyfin: 23100,
-  niftyit: 38500,
-  niftypharma: 20200,
-  niftyauto: 25300,
-  niftyfmcg: 56800,
-  niftymetal: 8900,
-  niftyhealthcare: 13800,
-  niftyinfra: 7600,
-  niftyrealty: 1020,
-  debtliquid: 4850,
-  goldetf: 72,
-};
+async function fetchYahooHistory(key: string): Promise<History | null> {
+  const symbol = YAHOO_SYMBOLS[key];
+  if (!symbol) return null;
+  const response = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=1y&interval=1d&events=history`, { cache: "no-store", headers: { Accept: "application/json" } });
+  if (!response.ok) return null;
+  const json = await response.json() as YahooChart;
+  const result = json.chart?.result?.[0];
+  const closes = result?.indicators?.quote?.[0]?.close ?? [];
+  const highs = result?.indicators?.quote?.[0]?.high ?? [];
+  const lows = result?.indicators?.quote?.[0]?.low ?? [];
+  if (closes.length < 30) return null;
+  const clean = (values: Array<number | null>) => values.filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+  return { closes: clean(closes), highs: clean(highs), lows: clean(lows) };
+}
 
-export function generateMarketData(): MarketData[] {
-  const seed = dateSeed();
-  const rand = seededRandom(seed);
+function nseValue(row: NseRow, field: string): number | null { return num(row[field]); }
+
+export async function generateMarketData(): Promise<MarketData[]> {
   const now = new Date();
-  const hours = now.getHours();
-  const isMarketHours = hours >= 9 && hours < 16;
+  let nseRows: NseRow[] = [];
+  let nseAvailable = false;
+  try {
+    nseRows = (await fetchNseIndices()).rows;
+    nseAvailable = true;
+  } catch (error) {
+    console.warn("NSE live feed unavailable; using Yahoo fallback:", error instanceof Error ? error.message : error);
+  }
 
-  return SECTORS.map((sector, idx) => {
-    const r = seededRandom(seed + idx * 137);
-    const base = BASE_LEVELS[sector.key] || 10000;
-    
-    // Generate realistic daily changes - most sectors slightly negative to positive
-    // A few sectors have larger declines to create opportunities
-    const volatility = sector.category === "defensive" ? 0.3 : (sector.category === "sector" ? 2.8 : 1.8);
-    const todayChange = (r() - 0.55) * volatility * 2; // slight negative bias
-    
-    const weekChange = todayChange + (r() - 0.48) * volatility * 3;
-    const monthChange = weekChange + (r() - 0.45) * volatility * 5;
-    const threeMonthChange = monthChange + (r() - 0.42) * volatility * 4;
-    const sixMonthChange = threeMonthChange + (r() - 0.4) * 8;
-    const yearChange = sixMonthChange + (r() - 0.35) * 12;
+  const rowsByKey = new Map<string, NseRow>();
+  for (const sector of SECTORS) {
+    const aliases = NSE_ALIASES[sector.key] ?? [];
+    const row = nseRows.find(r => aliases.includes(String(r.index ?? "").toUpperCase().trim()));
+    if (row) rowsByKey.set(sector.key, row);
+  }
 
-    const currentLevel = Math.round(base * (1 + todayChange / 100) * 100) / 100;
-    const prevClose = Math.round(base * 100) / 100;
-    
-    const high52w = Math.round(base * (1 + Math.abs(yearChange) / 100 + r() * 0.08) * 100) / 100;
-    const low52w = Math.round(base * (1 - r() * 0.25 - 0.05) * 100) / 100;
-    
-    const dayHigh = Math.round(currentLevel * (1 + r() * 0.008) * 100) / 100;
-    const dayLow = Math.round(currentLevel * (1 - r() * 0.012) * 100) / 100;
+  const histories = await Promise.all(SECTORS.map(async sector => [sector.key, await fetchYahooHistory(sector.key)] as const));
+  const historyMap = new Map(histories);
 
-    // Technical indicators
-    const rsi14 = clampNum(45 + todayChange * 3 + (r() - 0.5) * 20, 15, 85);
-    const dma20 = Math.round(base * (1 + (r() - 0.5) * 0.02) * 100) / 100;
-    const dma50 = Math.round(base * (1 + (r() - 0.48) * 0.04) * 100) / 100;
-    const dma100 = Math.round(base * (1 + (r() - 0.45) * 0.06) * 100) / 100;
-    const dma200 = Math.round(base * (1 + (r() - 0.42) * 0.08) * 100) / 100;
-    
-    const macd = (r() - 0.5) * 80;
-    const macdSignal = macd + (r() - 0.5) * 30;
-    const macdHistogram = macd - macdSignal;
-    const adx = 15 + r() * 35;
-
-    const volOptions: Array<"increasing" | "decreasing" | "stable"> = ["increasing", "decreasing", "stable"];
-    const volumeTrend = volOptions[Math.floor(r() * 3)];
-
+  return Promise.all(SECTORS.map(async sector => {
+    const row = rowsByKey.get(sector.key);
+    const history = historyMap.get(sector.key);
+    const metrics = history ? historyMetrics(history) : null;
+    const current = nseValue(row ?? {}, "last") ?? metrics?.previous ?? 0;
+    const previous = nseValue(row ?? {}, "previousClose") ?? metrics?.previous ?? current;
+    const todayChange = nseValue(row ?? {}, "percentChange") ?? nseValue(row ?? {}, "variation") ?? (previous ? ((current - previous) / previous) * 100 : 0);
+    const fallbackChange = (key: string, value: number) => {
+      if (nseAvailable && row && Number.isFinite(value)) return value;
+      return value;
+    };
+    const weekChange = metrics?.weekChange ?? 0;
+    const monthChange = nseValue(row ?? {}, "perChange30d") ?? metrics?.monthChange ?? 0;
+    const threeMonthChange = nseValue(row ?? {}, "perChange90d") ?? metrics?.threeMonthChange ?? 0;
+    const sixMonthChange = metrics?.sixMonthChange ?? threeMonthChange;
+    const yearChange = nseValue(row ?? {}, "perChange365d") ?? metrics?.yearChange ?? 0;
+    const high52w = metrics?.high52w ?? current;
+    const low52w = metrics?.low52w ?? current;
+    const technical = metrics ?? {
+      rsi14: 50, macd: 0, macdSignal: 0, macdHistogram: 0, dma20: current, dma50: current, dma100: current, dma200: current,
+      adx: 20, high52w: current, low52w: current, weekChange, monthChange, threeMonthChange, sixMonthChange, yearChange, dayHigh: current, dayLow: current, previous,
+    };
+    const volumeTrend: "increasing" | "decreasing" | "stable" = "stable";
     return {
       sectorKey: sector.key,
-      currentLevel: Math.round(currentLevel * 100) / 100,
-      todayChange: Math.round(todayChange * 100) / 100,
-      weekChange: Math.round(weekChange * 100) / 100,
-      monthChange: Math.round(monthChange * 100) / 100,
-      threeMonthChange: Math.round(threeMonthChange * 100) / 100,
-      sixMonthChange: Math.round(sixMonthChange * 100) / 100,
-      yearChange: Math.round(yearChange * 100) / 100,
-      high52w,
-      low52w,
-      dayHigh,
-      dayLow,
-      rsi14: Math.round(rsi14 * 10) / 10,
-      macd: Math.round(macd * 100) / 100,
-      macdSignal: Math.round(macdSignal * 100) / 100,
-      macdHistogram: Math.round(macdHistogram * 100) / 100,
-      dma20,
-      dma50,
-      dma100,
-      dma200,
-      adx: Math.round(adx * 10) / 10,
+      currentLevel: round(current),
+      todayChange: round(fallbackChange(sector.key, todayChange)),
+      weekChange: round(weekChange),
+      monthChange: round(monthChange),
+      threeMonthChange: round(threeMonthChange),
+      sixMonthChange: round(sixMonthChange),
+      yearChange: round(yearChange),
+      high52w: round(high52w),
+      low52w: round(low52w),
+      dayHigh: round(technical.dayHigh),
+      dayLow: round(technical.dayLow),
+      rsi14: round(technical.rsi14, 1),
+      macd: round(technical.macd),
+      macdSignal: round(technical.macdSignal),
+      macdHistogram: round(technical.macdHistogram),
+      dma20: round(technical.dma20),
+      dma50: round(technical.dma50),
+      dma100: round(technical.dma100),
+      dma200: round(technical.dma200),
+      adx: round(technical.adx, 1),
       volumeTrend,
-      lastUpdated: isMarketHours
-        ? now.toISOString()
-        : new Date(now.getFullYear(), now.getMonth(), now.getDate(), 15, 30, 0).toISOString(),
+      lastUpdated: now.toISOString(),
     };
-  });
+  }));
 }
 
-function clampNum(v: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, v));
-}
-
-export function getTopLosers(data: MarketData[], count: number = 10): MarketData[] {
-  return [...data]
-    .filter(d => d.sectorKey !== "debtliquid" && d.sectorKey !== "goldetf")
-    .sort((a, b) => a.todayChange - b.todayChange)
-    .slice(0, count);
+export function getTopLosers(data: MarketData[], count = 10): MarketData[] {
+  return [...data].filter(d => d.sectorKey !== "debtliquid" && d.sectorKey !== "goldetf").sort((a, b) => a.todayChange - b.todayChange).slice(0, count);
 }
 
 export function getMarketStatus(): { status: string; nseStatus: string; bseStatus: string } {
-  const now = new Date();
-  const hours = now.getHours();
-  const minutes = now.getMinutes();
-  const day = now.getDay();
-  
-  if (day === 0 || day === 6) {
-    return { status: "CLOSED", nseStatus: "Closed", bseStatus: "Closed" };
-  }
-  if (hours < 9 || (hours === 9 && minutes < 15)) {
-    return { status: "PRE-OPEN", nseStatus: "Pre-Open", bseStatus: "Pre-Open" };
-  }
-  if (hours < 15 || (hours === 15 && minutes <= 30)) {
-    return { status: "OPEN", nseStatus: "Trading", bseStatus: "Trading" };
-  }
+  const parts = new Intl.DateTimeFormat("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", weekday: "short", hourCycle: "h23" }).formatToParts(new Date());
+  const get = (type: string) => parts.find(p => p.type === type)?.value ?? "0";
+  const day = get("weekday");
+  const minutes = Number(get("hour")) * 60 + Number(get("minute"));
+  if (day === "Sat" || day === "Sun") return { status: "CLOSED", nseStatus: "Closed", bseStatus: "Closed" };
+  if (minutes < 555) return { status: "PRE-OPEN", nseStatus: "Pre-Open", bseStatus: "Pre-Open" };
+  if (minutes <= 930) return { status: "OPEN", nseStatus: "Trading", bseStatus: "Trading" };
   return { status: "CLOSED", nseStatus: "Closed", bseStatus: "Closed" };
 }
 
 export function is230PMWindow(): boolean {
-  const now = new Date();
-  const hours = now.getHours();
-  const minutes = now.getMinutes();
-  return hours === 14 && minutes >= 15 || hours === 14 && minutes <= 45 || hours >= 14;
+  const parts = new Intl.DateTimeFormat("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(new Date());
+  const get = (type: string) => parts.find(p => p.type === type)?.value ?? "0";
+  const minutes = Number(get("hour")) * 60 + Number(get("minute"));
+  return minutes >= 870 && minutes <= 930;
 }
