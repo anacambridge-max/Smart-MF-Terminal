@@ -1,19 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateMarketData } from "@/lib/market-data";
 import { calculateAllScores } from "@/lib/scoring";
-import { SECTORS, getSectorByKey } from "@/lib/sectors";
+import { getSectorByKey } from "@/lib/sectors";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
   try {
     const { amount, minScore = 50 } = await req.json();
-    
+
     if (!amount || amount <= 0) {
       return NextResponse.json({ error: "Invalid amount" }, { status: 400 });
     }
 
-    const allData = generateMarketData();
+    // generateMarketData is async because it now fetches live NSE/Yahoo data.
+    const allData = await generateMarketData();
     const scored = allData
       .map(d => {
         const scores = calculateAllScores(d, allData);
@@ -35,14 +36,13 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Weighted allocation based on opportunity scores
     const totalScore = scored.reduce((s, x) => s + x.opportunityScore, 0);
     const reservePct = 0.1;
     const investableAmount = amount * (1 - reservePct);
-    
+
     const allocations = scored.map(s => {
       const weight = s.opportunityScore / totalScore;
-      const allocated = Math.round(investableAmount * weight / 100) * 100; // round to nearest 100
+      const allocated = Math.round(investableAmount * weight / 100) * 100;
       return {
         sectorKey: s.sectorKey,
         sectorName: s.sector?.name || s.sectorKey,
