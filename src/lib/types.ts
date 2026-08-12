@@ -74,8 +74,10 @@ export interface MarketApiResponse {
   sectors: ScoredSector[];
   topLosers: ScoredSector[];
   topOpportunities: ScoredSector[];
+  avoidList?: ScoredSector[];
   lastUpdated: string;
   dataSource?: string;
   dataMode?: string;
+  navCutoff?: string;
   weights: Record<string, number>;
 }
