@@ -99,12 +99,11 @@ export async function generateMarketData(): Promise<MarketData[]> {
     const nseChange = num(row.percentChange);
     const afterHours = marketStatus.status === "CLOSED";
 
-    // NSE is the authoritative intraday source. Outside market hours, if NSE publishes a
-    // zero/missing value for an index, use the latest Yahoo close rather than displaying 0.
-    // This is real published market data, never a simulated number.
-    const current = nseCurrent !== null && nseCurrent > 0 ? nseCurrent : (afterHours ? metrics.rsi14 >= 0 ? metrics.dayHigh === metrics.dayHigh ? history.closes.at(-1) ?? 0 : 0 : 0 : null);
+    // During trading hours NSE is authoritative. Outside trading hours, a zero/missing
+    // NSE quote is replaced by the latest published Yahoo close — never a simulated value.
+    const current = nseCurrent !== null && nseCurrent > 0 ? nseCurrent : afterHours ? (history.closes.at(-1) ?? 0) : null;
     const previous = nsePrevious !== null && nsePrevious > 0 ? nsePrevious : metrics.previous;
-    const todayChange = nseChange !== null && nseCurrent !== null && nseCurrent > 0 ? nseChange : (afterHours ? metrics.dayChange : null);
+    const todayChange = nseChange !== null && nseCurrent !== null && nseCurrent > 0 ? nseChange : afterHours ? metrics.dayChange : null;
 
     if (current === null || !Number.isFinite(current) || current <= 0 || previous === null || !Number.isFinite(previous) || previous <= 0 || todayChange === null || !Number.isFinite(todayChange)) {
       throw new Error(`Incomplete live NSE values for ${sector.key}`);
