@@ -12,4 +12,8 @@ NSE live indices → 1Y technical history → correction/trend/reason scoring �
 
 The terminal displays the 3:00 PM IST equity mutual-fund NAV decision cutoff; liquid/overnight schemes follow their applicable cut-off rules.
 
+## Deployment
+
+Live deployment trigger refreshed on 13 August 2026.
+
 Research and decision support only; not financial advice.
