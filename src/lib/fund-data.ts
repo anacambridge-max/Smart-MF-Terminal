@@ -18,7 +18,7 @@ type NavPoint = { date: string; nav: string };
 type HistoryResponse = { meta?: { scheme_code?: number; scheme_name?: string }; data?: NavPoint[]; status?: string };
 
 const cache = new Map<string, { expires: number; data: FundLiveData }>();
-const CACHE_MS = 10 * 60 * 1000;
+const CACHE_MS = 60 * 1000;
 
 function norm(s: string) {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\b(plan|option|growth|direct|regular)\b/g, " ").replace(/\s+/g, " ").trim();
@@ -49,8 +49,8 @@ async function searchScheme(fundName: string): Promise<SearchItem> {
   const items = await response.json() as SearchItem[];
   if (!Array.isArray(items) || !items.length) throw new Error(`MFAPI scheme not found: ${fundName}`);
   const target = norm(fundName);
-  const directGrowth = items.find(x => /direct/i.test(x.schemeName) && /growth/i.test(x.schemeName));
   const exact = items.find(x => norm(x.schemeName) === target);
+  const directGrowth = items.find(x => /direct/i.test(x.schemeName) && /growth/i.test(x.schemeName));
   return exact ?? directGrowth ?? items[0];
 }
 
@@ -78,12 +78,12 @@ export async function fetchFundLiveData(fundName: string): Promise<FundLiveData>
     schemeName: scheme.schemeName,
     nav: Number(latest.numeric.toFixed(4)),
     navDate: latest.date,
-    navChange1d: ret(1),
-    return1w: ret(7),
-    return1m: ret(30),
-    return3m: ret(90),
-    return6m: ret(180),
-    return1y: ret(365),
+    navChange1d: Number(ret(1).toFixed(4)),
+    return1w: Number(ret(7).toFixed(4)),
+    return1m: Number(ret(30).toFixed(4)),
+    return3m: Number(ret(90).toFixed(4)),
+    return6m: Number(ret(180).toFixed(4)),
+    return1y: Number(ret(365).toFixed(4)),
     source: "MFAPI",
     fetchedAt: new Date().toISOString(),
   };
@@ -93,6 +93,7 @@ export async function fetchFundLiveData(fundName: string): Promise<FundLiveData>
 
 export async function fetchFundsLive(fundNames: string[]): Promise<Map<string, FundLiveData>> {
   const unique = [...new Set(fundNames.filter(Boolean))];
-  const entries = await Promise.all(unique.map(async name => [name, await fetchFundLiveData(name)] as const));
+  const settled = await Promise.allSettled(unique.map(async name => [name, await fetchFundLiveData(name)] as const));
+  const entries = settled.flatMap(result => result.status === "fulfilled" ? [result.value] : []);
   return new Map(entries);
 }
