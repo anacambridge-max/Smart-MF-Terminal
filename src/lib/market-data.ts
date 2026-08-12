@@ -1,150 +1,76 @@
 import { type MarketData } from "./scoring";
 import { SECTORS } from "./sectors";
 
-// Seeded PRNG for deterministic but realistic market data
-// Changes daily based on date
-function seededRandom(seed: number): () => number {
-  let s = seed;
-  return () => {
-    s = (s * 1103515245 + 12345) & 0x7fffffff;
-    return s / 0x7fffffff;
-  };
-}
+type NseRow = Record<string, unknown>;
+type YahooResult = { meta?: { regularMarketPrice?: number; previousClose?: number }; indicators?: { quote?: Array<{ close?: Array<number | null>; high?: Array<number | null>; low?: Array<number | null> }> } };
+type YahooChart = { chart?: { result?: YahooResult[] } };
+type History = { closes: number[]; highs: number[]; lows: number[] };
 
-function dateSeed(): number {
-  const now = new Date();
-  return now.getFullYear() * 10000 + (now.getMonth() + 1) * 100 + now.getDate();
-}
-
-// Base levels for each sector index (approximate realistic levels)
-const BASE_LEVELS: Record<string, number> = {
-  nifty50: 24500,
-  niftynext50: 62000,
-  niftymidcap150: 19500,
-  niftysmallcap250: 16800,
-  nifty500: 22400,
-  niftybank: 51200,
-  niftyfin: 23100,
-  niftyit: 38500,
-  niftypharma: 20200,
-  niftyauto: 25300,
-  niftyfmcg: 56800,
-  niftymetal: 8900,
-  niftyhealthcare: 13800,
-  niftyinfra: 7600,
-  niftyrealty: 1020,
-  debtliquid: 4850,
-  goldetf: 72,
+const NSE_ALIASES: Record<string, string[]> = {
+  nifty50: ["NIFTY 50"], niftynext50: ["NIFTY NEXT 50"], niftymidcap150: ["NIFTY MIDCAP 150"], niftysmallcap250: ["NIFTY SMALLCAP 250"], nifty500: ["NIFTY 500"], niftybank: ["NIFTY BANK"], niftyfin: ["NIFTY FINANCIAL SERVICES", "NIFTY FINANCIAL SERVICES 25/50"], niftyit: ["NIFTY IT"], niftypharma: ["NIFTY PHARMA"], niftyauto: ["NIFTY AUTO"], niftyfmcg: ["NIFTY FMCG"], niftymetal: ["NIFTY METAL"], niftyhealthcare: ["NIFTY HEALTHCARE INDEX", "NIFTY HEALTHCARE"], niftyinfra: ["NIFTY INFRASTRUCTURE"], niftyrealty: ["NIFTY REALTY"],
 };
 
-export function generateMarketData(): MarketData[] {
-  const seed = dateSeed();
-  const rand = seededRandom(seed);
-  const now = new Date();
-  const hours = now.getHours();
-  const isMarketHours = hours >= 9 && hours < 16;
+const YAHOO_SYMBOLS: Record<string, string[]> = {
+  nifty50: ["^NSEI"], niftynext50: ["NIFTYNXT50.NS"], niftymidcap150: ["NIFTY_MIDCAP_150.NS", "^NSEMDCP50"], niftysmallcap250: ["NIFTYSMLCAP250.NS"], nifty500: ["^CRSLDX"], niftybank: ["^NSEBANK"], niftyfin: ["NIFTY_FIN_SERVICE.NS", "^CNXFIN"], niftyit: ["^CNXIT"], niftypharma: ["^CNXPHARMA"], niftyauto: ["^CNXAUTO"], niftyfmcg: ["^CNXFMCG"], niftymetal: ["^CNXMETAL"], niftyhealthcare: ["NIFTY_HEALTHCARE.NS", "^CNXHEALTH"], niftyinfra: ["^CNXINFRA"], niftyrealty: ["^CNXREALTY"],
+};
 
-  return SECTORS.map((sector, idx) => {
-    const r = seededRandom(seed + idx * 137);
-    const base = BASE_LEVELS[sector.key] || 10000;
-    
-    // Generate realistic daily changes - most sectors slightly negative to positive
-    // A few sectors have larger declines to create opportunities
-    const volatility = sector.category === "defensive" ? 0.3 : (sector.category === "sector" ? 2.8 : 1.8);
-    const todayChange = (r() - 0.55) * volatility * 2; // slight negative bias
-    
-    const weekChange = todayChange + (r() - 0.48) * volatility * 3;
-    const monthChange = weekChange + (r() - 0.45) * volatility * 5;
-    const threeMonthChange = monthChange + (r() - 0.42) * volatility * 4;
-    const sixMonthChange = threeMonthChange + (r() - 0.4) * 8;
-    const yearChange = sixMonthChange + (r() - 0.35) * 12;
+const num = (v: unknown): number | null => { if (typeof v === "number" && Number.isFinite(v)) return v; if (typeof v !== "string") return null; const n = Number(v.replace(/,/g, "").trim()); return Number.isFinite(n) ? n : null; };
+const round = (v: number, d = 2) => Number(v.toFixed(d));
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
-    const currentLevel = Math.round(base * (1 + todayChange / 100) * 100) / 100;
-    const prevClose = Math.round(base * 100) / 100;
-    
-    const high52w = Math.round(base * (1 + Math.abs(yearChange) / 100 + r() * 0.08) * 100) / 100;
-    const low52w = Math.round(base * (1 - r() * 0.25 - 0.05) * 100) / 100;
-    
-    const dayHigh = Math.round(currentLevel * (1 + r() * 0.008) * 100) / 100;
-    const dayLow = Math.round(currentLevel * (1 - r() * 0.012) * 100) / 100;
+function sma(values: number[], period: number) { if (values.length < period) return values.at(-1) ?? 0; const s = values.slice(-period); return s.reduce((a,b)=>a+b,0)/s.length; }
+function rsi(values: number[], period=14) { if (values.length <= period) return 50; let gains=0, losses=0; for(let i=values.length-period;i<values.length;i++){const d=values[i]-values[i-1];if(d>=0)gains+=d;else losses-=d;} if(!losses)return 100; const rs=(gains/period)/(losses/period); return 100-100/(1+rs); }
+function ema(values:number[],period:number){if(!values.length)return[];const k=2/(period+1),out=[values[0]];for(let i=1;i<values.length;i++)out.push(values[i]*k+out[i-1]*(1-k));return out;}
+function macd(values:number[]){const fast=ema(values,12),slow=ema(values,26),line=values.map((_,i)=>fast[i]-slow[i]),signal=ema(line,9),l=line.at(-1)??0,s=signal.at(-1)??0;return{line:l,signal:s,histogram:l-s};}
+function adxApprox(h:History,period=14){if(h.closes.length<period+1)return 20;let tr=0,dir=0;for(let i=Math.max(1,h.closes.length-period);i<h.closes.length;i++){const hi=h.highs[i]??h.closes[i],lo=h.lows[i]??h.closes[i],p=h.closes[i-1];tr+=Math.max(hi-lo,Math.abs(hi-p),Math.abs(lo-p));dir+=Math.abs(h.closes[i]-p);}return clamp((dir/Math.max(tr,1))*100,0,60);}
+function metrics(h:History){const c=h.closes,cur=c.at(-1)??0,m=macd(c),change=(n:number)=>c.length>n?((cur/c.at(-n-1)!)-1)*100:0;return{rsi14:rsi(c),macd:m.line,macdSignal:m.signal,macdHistogram:m.histogram,dma20:sma(c,20),dma50:sma(c,50),dma100:sma(c,100),dma200:sma(c,200),adx:adxApprox(h),high52w:Math.max(...c.slice(-252)),low52w:Math.min(...c.slice(-252)),weekChange:change(5),monthChange:change(21),threeMonthChange:change(63),sixMonthChange:change(126),yearChange:change(252),dayHigh:h.highs.at(-1)??cur,dayLow:h.lows.at(-1)??cur};}
 
-    // Technical indicators
-    const rsi14 = clampNum(45 + todayChange * 3 + (r() - 0.5) * 20, 15, 85);
-    const dma20 = Math.round(base * (1 + (r() - 0.5) * 0.02) * 100) / 100;
-    const dma50 = Math.round(base * (1 + (r() - 0.48) * 0.04) * 100) / 100;
-    const dma100 = Math.round(base * (1 + (r() - 0.45) * 0.06) * 100) / 100;
-    const dma200 = Math.round(base * (1 + (r() - 0.42) * 0.08) * 100) / 100;
-    
-    const macd = (r() - 0.5) * 80;
-    const macdSignal = macd + (r() - 0.5) * 30;
-    const macdHistogram = macd - macdSignal;
-    const adx = 15 + r() * 35;
+function cookieHeader(headers: Headers): string { return headers.get("set-cookie")?.split(/,(?=[^;]+?=)/).map(x=>x.split(";")[0]).join("; ") ?? ""; }
 
-    const volOptions: Array<"increasing" | "decreasing" | "stable"> = ["increasing", "decreasing", "stable"];
-    const volumeTrend = volOptions[Math.floor(r() * 3)];
-
-    return {
-      sectorKey: sector.key,
-      currentLevel: Math.round(currentLevel * 100) / 100,
-      todayChange: Math.round(todayChange * 100) / 100,
-      weekChange: Math.round(weekChange * 100) / 100,
-      monthChange: Math.round(monthChange * 100) / 100,
-      threeMonthChange: Math.round(threeMonthChange * 100) / 100,
-      sixMonthChange: Math.round(sixMonthChange * 100) / 100,
-      yearChange: Math.round(yearChange * 100) / 100,
-      high52w,
-      low52w,
-      dayHigh,
-      dayLow,
-      rsi14: Math.round(rsi14 * 10) / 10,
-      macd: Math.round(macd * 100) / 100,
-      macdSignal: Math.round(macdSignal * 100) / 100,
-      macdHistogram: Math.round(macdHistogram * 100) / 100,
-      dma20,
-      dma50,
-      dma100,
-      dma200,
-      adx: Math.round(adx * 10) / 10,
-      volumeTrend,
-      lastUpdated: isMarketHours
-        ? now.toISOString()
-        : new Date(now.getFullYear(), now.getMonth(), now.getDate(), 15, 30, 0).toISOString(),
-    };
-  });
+async function fetchNseIndices(): Promise<NseRow[]> {
+  const headers={"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36",Accept:"application/json,text/plain,*/*",Referer:"https://www.nseindia.com/",Origin:"https://www.nseindia.com","Accept-Language":"en-US,en;q=0.9"};
+  const warm=await fetch("https://www.nseindia.com/",{cache:"no-store",headers});
+  if(!warm.ok)throw new Error(`NSE warm-up failed: ${warm.status}`);
+  const cookie=cookieHeader(warm.headers);
+  const response=await fetch("https://www.nseindia.com/api/allIndices",{cache:"no-store",headers:{...headers,Cookie:cookie}});
+  if(!response.ok)throw new Error(`NSE allIndices failed: ${response.status}`);
+  const json=await response.json() as {data?:NseRow[]};
+  if(!Array.isArray(json.data)||!json.data.length)throw new Error("NSE returned no index data");
+  return json.data;
 }
 
-function clampNum(v: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, v));
+async function fetchYahoo(symbol:string):Promise<{history:History;current:number;previous:number}> {
+  const url=`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=1y&interval=1d&events=history`;
+  const r=await fetch(url,{cache:"no-store",headers:{Accept:"application/json"}}); if(!r.ok)throw new Error(`Yahoo ${symbol}: ${r.status}`);
+  const json=await r.json() as YahooChart; const result=json.chart?.result?.[0]; const q=result?.indicators?.quote?.[0];
+  if(!result||!q?.close)throw new Error(`Yahoo ${symbol}: no data`);
+  const closes=q.close.filter((v):v is number=>typeof v==="number"&&Number.isFinite(v)); const highs=(q.high??[]).filter((v):v is number=>typeof v==="number"&&Number.isFinite(v)); const lows=(q.low??[]).filter((v):v is number=>typeof v==="number"&&Number.isFinite(v));
+  if(closes.length<200)throw new Error(`Yahoo ${symbol}: only ${closes.length} history rows`);
+  const current=num(result.meta?.regularMarketPrice)??closes.at(-1)??null; const previous=num(result.meta?.previousClose)??closes.at(-2)??null;
+  if(current===null||previous===null)throw new Error(`Yahoo ${symbol}: missing current price`);
+  return{history:{closes,highs,lows},current,previous};
 }
 
-export function getTopLosers(data: MarketData[], count: number = 10): MarketData[] {
-  return [...data]
-    .filter(d => d.sectorKey !== "debtliquid" && d.sectorKey !== "goldetf")
-    .sort((a, b) => a.todayChange - b.todayChange)
-    .slice(0, count);
-}
-
-export function getMarketStatus(): { status: string; nseStatus: string; bseStatus: string } {
-  const now = new Date();
-  const hours = now.getHours();
-  const minutes = now.getMinutes();
-  const day = now.getDay();
-  
-  if (day === 0 || day === 6) {
-    return { status: "CLOSED", nseStatus: "Closed", bseStatus: "Closed" };
+export async function generateMarketData():Promise<MarketData[]> {
+  const now=new Date().toISOString();
+  let nseRows:NseRow[]=[]; try{nseRows=await fetchNseIndices();}catch(error){console.warn("NSE live feed unavailable; using validated Yahoo current/index history where available",error);}
+  const out:MarketData[]=[];
+  const candidates=SECTORS.filter(s=>s.category!=="defensive");
+  for(const sector of candidates){
+    try{
+      const aliases=NSE_ALIASES[sector.key]??[]; const nse=nseRows.find(r=>aliases.includes(String(r.index??"").toUpperCase().trim()));
+      let liveCurrent=num(nse?.last), livePrevious=num(nse?.previousClose), liveChange=num(nse?.percentChange), history:History|null=null;
+      const symbols=YAHOO_SYMBOLS[sector.key]??[];
+      for(const symbol of symbols){if(history)break;try{const y=await fetchYahoo(symbol);history=y.history;if(liveCurrent===null)liveCurrent=y.current;if(livePrevious===null)livePrevious=y.previous;if(liveChange===null&&livePrevious)liveChange=((liveCurrent!/livePrevious)-1)*100;}catch(error){console.warn(`Yahoo fallback failed for ${sector.key}/${symbol}`,error);}}
+      if(!history||liveCurrent===null||livePrevious===null||liveChange===null)throw new Error(`No validated live feed for ${sector.key}`);
+      const m=metrics(history);
+      out.push({sectorKey:sector.key,currentLevel:round(liveCurrent),todayChange:round(liveChange),weekChange:round(m.weekChange),monthChange:round(num(nse?.perChange30d)??m.monthChange),threeMonthChange:round(num(nse?.perChange90d)??m.threeMonthChange),sixMonthChange:round(m.sixMonthChange),yearChange:round(num(nse?.perChange365d)??m.yearChange),high52w:round(m.high52w),low52w:round(m.low52w),dayHigh:round(m.dayHigh),dayLow:round(m.dayLow),rsi14:round(m.rsi14,1),macd:round(m.macd),macdSignal:round(m.macdSignal),macdHistogram:round(m.macdHistogram),dma20:round(m.dma20),dma50:round(m.dma50),dma100:round(m.dma100),dma200:round(m.dma200),adx:round(m.adx,1),volumeTrend:"stable",lastUpdated:now});
+    }catch(error){console.warn(`Skipping ${sector.key}:`,error);}
   }
-  if (hours < 9 || (hours === 9 && minutes < 15)) {
-    return { status: "PRE-OPEN", nseStatus: "Pre-Open", bseStatus: "Pre-Open" };
-  }
-  if (hours < 15 || (hours === 15 && minutes <= 30)) {
-    return { status: "OPEN", nseStatus: "Trading", bseStatus: "Trading" };
-  }
-  return { status: "CLOSED", nseStatus: "Closed", bseStatus: "Closed" };
+  if(out.length<5)throw new Error(`Validated live market feeds available for only ${out.length} sectors; refusing to return an unreliable dashboard.`);
+  return out;
 }
 
-export function is230PMWindow(): boolean {
-  const now = new Date();
-  const hours = now.getHours();
-  const minutes = now.getMinutes();
-  return hours === 14 && minutes >= 15 || hours === 14 && minutes <= 45 || hours >= 14;
-}
+export function getTopLosers(data:MarketData[],count=10){return[...data].sort((a,b)=>a.todayChange-b.todayChange).slice(0,count);}
+export function getMarketStatus(){const p=new Intl.DateTimeFormat("en-IN",{timeZone:"Asia/Kolkata",hour:"2-digit",minute:"2-digit",weekday:"short",hourCycle:"h23"}).formatToParts(new Date()),get=(t:string)=>p.find(x=>x.type===t)?.value??"0",day=get("weekday"),min=Number(get("hour"))*60+Number(get("minute"));if(day==="Sat"||day==="Sun")return{status:"CLOSED",nseStatus:"Closed",bseStatus:"Closed"};if(min<555)return{status:"PRE-OPEN",nseStatus:"Pre-Open",bseStatus:"Pre-Open"};if(min<=930)return{status:"OPEN",nseStatus:"Trading",bseStatus:"Trading"};return{status:"CLOSED",nseStatus:"Closed",bseStatus:"Closed"};}
+export function is230PMWindow(){const p=new Intl.DateTimeFormat("en-IN",{timeZone:"Asia/Kolkata",hour:"2-digit",minute:"2-digit",hourCycle:"h23"}).formatToParts(new Date()),get=(t:string)=>p.find(x=>x.type===t)?.value??"0",m=Number(get("hour"))*60+Number(get("minute"));return m>=870&&m<=930;}

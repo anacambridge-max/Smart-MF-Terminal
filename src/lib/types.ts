@@ -1,3 +1,18 @@
+export interface FundLiveData {
+  schemeCode: number;
+  schemeName: string;
+  nav: number;
+  navDate: string;
+  navChange1d: number;
+  return1w: number;
+  return1m: number;
+  return3m: number;
+  return6m: number;
+  return1y: number;
+  source: string;
+  fetchedAt: string;
+}
+
 export interface ScoredSector {
   sectorKey: string;
   sectorName: string;
@@ -9,7 +24,7 @@ export interface ScoredSector {
   fundAMC: string;
   expenseRatio: number;
   aumCr: number;
-  // Market data
+  fundLive?: FundLiveData;
   currentLevel: number;
   todayChange: number;
   weekChange: number;
@@ -32,7 +47,6 @@ export interface ScoredSector {
   adx: number;
   volumeTrend: string;
   lastUpdated: string;
-  // Scores
   correctionScore: number;
   technicalScore: number;
   bullBearScore: number;
@@ -60,6 +74,10 @@ export interface MarketApiResponse {
   sectors: ScoredSector[];
   topLosers: ScoredSector[];
   topOpportunities: ScoredSector[];
+  avoidList?: ScoredSector[];
   lastUpdated: string;
+  dataSource?: string;
+  dataMode?: string;
+  navCutoff?: string;
   weights: Record<string, number>;
 }
