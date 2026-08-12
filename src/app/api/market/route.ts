@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { generateMarketData, getMarketStatus } from "@/lib/market-data";
 import { calculateAllScores, DEFAULT_WEIGHTS } from "@/lib/scoring";
 import { getSectorByKey } from "@/lib/sectors";
+import { fetchFundsLive } from "@/lib/fund-data";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -17,6 +18,8 @@ export async function GET() {
   const requestedAt = new Date().toISOString();
   try {
     const allMarketData = await generateMarketData();
+    const fundNames = allMarketData.map(d => getSectorByKey(d.sectorKey)?.recommendedFund).filter((x): x is string => Boolean(x));
+    const fundLive = await fetchFundsLive(fundNames);
     const marketStatus = getMarketStatus();
     const is230PM = is230PMDecisionWindow();
 
@@ -35,13 +38,15 @@ export async function GET() {
         fundAMC: sector?.fundAMC || "",
         expenseRatio: sector?.expenseRatio || 0,
         aumCr: sector?.aumCr || 0,
+        fundLive: sector?.recommendedFund ? fundLive.get(sector.recommendedFund) : undefined,
       };
     });
 
-    const topLosers = [...scoredSectors].filter(s => s.category !== "defensive").sort((a, b) => a.todayChange - b.todayChange).slice(0, 10);
-    const topOpportunities = [...scoredSectors].filter(s => s.todayChange < 0 && s.category !== "defensive").sort((a, b) => b.opportunityScore - a.opportunityScore).slice(0, 5);
-    const nifty50 = scoredSectors.find(s => s.sectorKey === "nifty50");
     const investable = scoredSectors.filter(s => s.category !== "defensive");
+    const topLosers = [...investable].sort((a, b) => a.todayChange - b.todayChange).slice(0, 10);
+    const topOpportunities = [...investable].filter(s => s.todayChange < 0).sort((a, b) => b.opportunityScore - a.opportunityScore).slice(0, 5);
+    const avoidList = [...investable].filter(s => s.riskScore >= 70 || (s.opportunityScore < 40 && s.bullBearScore < 45)).sort((a, b) => b.riskScore - a.riskScore).slice(0, 5);
+    const nifty50 = scoredSectors.find(s => s.sectorKey === "nifty50");
     const avgChange = investable.length ? investable.reduce((sum, s) => sum + s.todayChange, 0) / investable.length : 0;
 
     return NextResponse.json({
@@ -54,14 +59,16 @@ export async function GET() {
       sectors: scoredSectors,
       topLosers,
       topOpportunities,
+      avoidList,
       lastUpdated: new Date().toISOString(),
       requestedAt,
-      dataSource: "NSE live index feed + Yahoo Finance 1Y history for technical indicators",
-      dataMode: "LIVE_LATEST",
+      dataSource: "NSE live index feed + Yahoo Finance 1Y technical history + MFAPI live NAV/history",
+      dataMode: "LIVE_VALIDATED",
       weights: DEFAULT_WEIGHTS,
+      navCutoff: "15:00 IST for equity mutual funds; liquid/overnight funds follow applicable cut-off rules",
     });
   } catch (error) {
     console.error("Market API error:", error);
-    return NextResponse.json({ ok: false, error: "Live market data could not be validated. No simulated values are returned.", requestedAt }, { status: 503 });
+    return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : "Live market data could not be validated. No simulated values are returned.", requestedAt }, { status: 503 });
   }
 }
