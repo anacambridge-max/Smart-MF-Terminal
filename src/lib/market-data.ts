@@ -2,7 +2,7 @@ import { type MarketData } from "./scoring";
 import { SECTORS } from "./sectors";
 
 type NseRow = Record<string, unknown>;
-type YahooChart = { chart?: { result?: Array<{ meta?: { regularMarketPrice?: number; previousClose?: number }; indicators?: { quote?: Array<{ close?: Array<number | null>; high?: Array<number | null>; low?: Array<number | null> }> } }> } };
+type YahooChart = { chart?: { result?: Array<{ indicators?: { quote?: Array<{ close?: Array<number | null>; high?: Array<number | null>; low?: Array<number | null> }> } }> } };
 type History = { closes: number[]; highs: number[]; lows: number[] };
 
 const NSE_ALIASES: Record<string, string[]> = {
@@ -40,28 +40,47 @@ async function fetchNseIndices(): Promise<{ rows: NseRow[]; fetchedAt: string }>
   return { rows: json.data, fetchedAt: new Date().toISOString() };
 }
 
-async function fetchYahooHistory(key: string): Promise<History | null> {
-  const symbol = YAHOO_SYMBOLS[key]; if (!symbol) return null;
+async function fetchYahooHistory(key: string): Promise<History> {
+  const symbol = YAHOO_SYMBOLS[key];
+  if (!symbol) throw new Error(`No Yahoo history symbol configured for ${key}`);
   const response = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=1y&interval=1d&events=history`, { cache: "no-store", headers: { Accept: "application/json" } });
-  if (!response.ok) return null;
-  const json = await response.json() as YahooChart; const quote = json.chart?.result?.[0]?.indicators?.quote?.[0]; if (!quote?.close) return null;
-  const closes = quote.close.filter((v): v is number => typeof v === "number" && Number.isFinite(v)); const highs = (quote.high ?? []).filter((v): v is number => typeof v === "number" && Number.isFinite(v)); const lows = (quote.low ?? []).filter((v): v is number => typeof v === "number" && Number.isFinite(v));
-  return closes.length >= 30 ? { closes, highs, lows } : null;
+  if (!response.ok) throw new Error(`Yahoo history failed for ${key}: ${response.status}`);
+  const json = await response.json() as YahooChart;
+  const quote = json.chart?.result?.[0]?.indicators?.quote?.[0];
+  if (!quote?.close) throw new Error(`Yahoo returned no history for ${key}`);
+  const closes = quote.close.filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+  const highs = (quote.high ?? []).filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+  const lows = (quote.low ?? []).filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+  if (closes.length < 200) throw new Error(`Insufficient Yahoo history for ${key}: ${closes.length} rows`);
+  return { closes, highs, lows };
 }
 
 export async function generateMarketData(): Promise<MarketData[]> {
-  const now = new Date(); let nseRows: NseRow[] = [];
-  try { nseRows = (await fetchNseIndices()).rows; } catch (error) { console.warn("NSE live feed unavailable; Yahoo fallback used for current values where available:", error instanceof Error ? error.message : error); }
+  const now = new Date();
+  const { rows: nseRows } = await fetchNseIndices();
   const rowsByKey = new Map<string, NseRow>();
-  for (const sector of SECTORS) { const aliases = NSE_ALIASES[sector.key] ?? []; const row = nseRows.find(r => aliases.includes(String(r.index ?? "").toUpperCase().trim())); if (row) rowsByKey.set(sector.key, row); }
-  const histories = await Promise.all(SECTORS.map(async sector => [sector.key, await fetchYahooHistory(sector.key)] as const));
+  for (const sector of SECTORS) {
+    if (sector.category === "defensive") continue;
+    const aliases = NSE_ALIASES[sector.key] ?? [];
+    const row = nseRows.find(r => aliases.includes(String(r.index ?? "").toUpperCase().trim()));
+    if (!row) throw new Error(`NSE index missing for ${sector.key}`);
+    rowsByKey.set(sector.key, row);
+  }
+  const histories = await Promise.all(SECTORS.filter(s => s.category !== "defensive").map(async sector => [sector.key, await fetchYahooHistory(sector.key)] as const));
   const historyMap = new Map(histories);
   return SECTORS.map(sector => {
-    const row = rowsByKey.get(sector.key), history = historyMap.get(sector.key), metrics = history ? historyMetrics(history) : null;
-    const current = num(row?.last) ?? metrics?.previous ?? 0, previous = num(row?.previousClose) ?? metrics?.previous ?? current;
-    const todayChange = num(row?.percentChange) ?? (previous ? ((current - previous) / previous) * 100 : 0);
-    const technical = metrics ?? { rsi14: 50, macd: 0, macdSignal: 0, macdHistogram: 0, dma20: current, dma50: current, dma100: current, dma200: current, adx: 20, high52w: current, low52w: current, weekChange: 0, monthChange: 0, threeMonthChange: 0, sixMonthChange: 0, yearChange: 0, dayHigh: current, dayLow: current, previous };
-    return { sectorKey: sector.key, currentLevel: round(current), todayChange: round(todayChange), weekChange: round(metrics?.weekChange ?? 0), monthChange: round(num(row?.perChange30d) ?? technical.monthChange), threeMonthChange: round(num(row?.perChange90d) ?? technical.threeMonthChange), sixMonthChange: round(technical.sixMonthChange), yearChange: round(num(row?.perChange365d) ?? technical.yearChange), high52w: round(technical.high52w), low52w: round(technical.low52w), dayHigh: round(technical.dayHigh), dayLow: round(technical.dayLow), rsi14: round(technical.rsi14, 1), macd: round(technical.macd), macdSignal: round(technical.macdSignal), macdHistogram: round(technical.macdHistogram), dma20: round(technical.dma20), dma50: round(technical.dma50), dma100: round(technical.dma100), dma200: round(technical.dma200), adx: round(technical.adx, 1), volumeTrend: "stable" as const, lastUpdated: now.toISOString() };
+    if (sector.category === "defensive") {
+      const current = sector.key === "goldetf" ? 0 : 0;
+      return { sectorKey: sector.key, currentLevel: current, todayChange: 0, weekChange: 0, monthChange: 0, threeMonthChange: 0, sixMonthChange: 0, yearChange: 0, high52w: current, low52w: current, dayHigh: current, dayLow: current, rsi14: 50, macd: 0, macdSignal: 0, macdHistogram: 0, dma20: current, dma50: current, dma100: current, dma200: current, adx: 20, volumeTrend: "stable" as const, lastUpdated: now.toISOString() };
+    }
+    const row = rowsByKey.get(sector.key)!;
+    const history = historyMap.get(sector.key)!;
+    const metrics = historyMetrics(history);
+    const current = num(row.last);
+    const previous = num(row.previousClose);
+    const todayChange = num(row.percentChange);
+    if (current === null || previous === null || todayChange === null) throw new Error(`Incomplete live NSE values for ${sector.key}`);
+    return { sectorKey: sector.key, currentLevel: round(current), todayChange: round(todayChange), weekChange: round(metrics.weekChange), monthChange: round(num(row.perChange30d) ?? metrics.monthChange), threeMonthChange: round(num(row.perChange90d) ?? metrics.threeMonthChange), sixMonthChange: round(metrics.sixMonthChange), yearChange: round(num(row.perChange365d) ?? metrics.yearChange), high52w: round(metrics.high52w), low52w: round(metrics.low52w), dayHigh: round(metrics.dayHigh), dayLow: round(metrics.dayLow), rsi14: round(metrics.rsi14, 1), macd: round(metrics.macd), macdSignal: round(metrics.macdSignal), macdHistogram: round(metrics.macdHistogram), dma20: round(metrics.dma20), dma50: round(metrics.dma50), dma100: round(metrics.dma100), dma200: round(metrics.dma200), adx: round(metrics.adx, 1), volumeTrend: "stable" as const, lastUpdated: now.toISOString() };
   });
 }
 
