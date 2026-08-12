@@ -3,53 +3,42 @@
 import type { MarketApiResponse } from "@/lib/types";
 import ChangeIndicator from "./ChangeIndicator";
 
-interface HeaderBarProps {
-  data: MarketApiResponse;
-  onRefresh: () => void;
-  refreshing: boolean;
-}
+interface HeaderBarProps { data: MarketApiResponse; onRefresh: () => void; refreshing: boolean; }
 
 export default function HeaderBar({ data, onRefresh, refreshing }: HeaderBarProps) {
   const now = new Date();
-  const dateStr = now.toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+  const dateStr = now.toLocaleDateString("en-IN", { weekday: "short", day: "2-digit", month: "short", year: "numeric" });
   const timeStr = now.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   const updatedStr = new Date(data.lastUpdated).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-
-  const statusColor = data.marketStatus.status === "OPEN" ? "bg-terminal-green" : data.marketStatus.status === "PRE-OPEN" ? "bg-terminal-yellow" : "bg-terminal-red";
+  const open = data.marketStatus.status === "OPEN";
+  const preopen = data.marketStatus.status === "PRE-OPEN";
 
   return (
-    <header className="bg-terminal-card border-b border-terminal-border">
-      <div className="max-w-[1600px] mx-auto px-4 py-3">
-        <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-terminal-accent to-terminal-cyan flex items-center justify-center text-white font-bold text-sm">SM</div>
-            <div>
-              <h1 className="text-base font-bold text-terminal-text tracking-tight">Smart MF Terminal</h1>
-              <p className="text-[10px] text-terminal-text-muted tracking-wider uppercase">Mutual Fund Opportunity Dashboard</p>
+    <header className="border-b border-terminal-border bg-[#080d15]/95 backdrop-blur-xl">
+      <div className="max-w-[1600px] mx-auto px-4 lg:px-6 py-3">
+        <div className="flex flex-col 2xl:flex-row 2xl:items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="relative shrink-0 w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center shadow-lg shadow-blue-950/30">
+              <span className="font-black text-white text-sm tracking-tight">SM</span>
+              <span className="absolute -right-1 -top-1 w-2.5 h-2.5 rounded-full bg-terminal-green border-2 border-[#080d15]" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2"><h1 className="text-[15px] font-bold tracking-tight text-terminal-text">Smart MF Terminal</h1><span className="hidden sm:inline-flex px-1.5 py-0.5 rounded bg-blue-500/10 border border-blue-500/20 text-[8px] uppercase tracking-widest text-blue-400">Live Engine</span></div>
+              <p className="text-[9px] uppercase tracking-[.18em] text-terminal-text-muted mt-0.5">Mutual Fund Opportunity &amp; Decision System</p>
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3 md:gap-5 text-xs">
-            <div className="flex items-center gap-1.5"><div className={`w-2 h-2 rounded-full ${statusColor} ${data.marketStatus.status === "OPEN" ? "animate-pulse" : ""}`} /><span className="text-terminal-text-muted">NSE</span><span className="text-terminal-text">{data.marketStatus.nseStatus}</span></div>
-            <div className="hidden md:block h-4 w-px bg-terminal-border" />
-            <div><span className="text-terminal-text-muted mr-1">Nifty 50</span><span className="font-mono font-medium text-terminal-text">{data.nifty50Level.toLocaleString("en-IN")}</span><span className="ml-1"><ChangeIndicator value={data.nifty50Change} className="text-xs" /></span></div>
-            <div className="hidden md:block h-4 w-px bg-terminal-border" />
-            <div><span className="text-terminal-text-muted mr-1">Avg Mkt</span><ChangeIndicator value={data.avgMarketChange} className="text-xs" /></div>
-            <div className="hidden md:block h-4 w-px bg-terminal-border" />
-            <div><span className="text-terminal-text-muted">{dateStr}</span><span className="text-terminal-text-dim font-mono ml-1">{timeStr}</span></div>
-            <div className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium ${data.is230PM ? "bg-terminal-green/20 text-terminal-green pulse-glow" : "bg-terminal-card text-terminal-text-muted border border-terminal-border"}`}>⏰ 2:30 PM {data.is230PM ? "ACTIVE" : "STANDBY"}</div>
-            <button
-              type="button"
-              onClick={onRefresh}
-              disabled={refreshing}
-              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-terminal-accent/40 bg-terminal-accent/10 text-terminal-accent hover:bg-terminal-accent/20 disabled:opacity-50 disabled:cursor-not-allowed font-semibold transition-colors"
-              title="Fetch the latest validated market data now"
-            >
-              <span className={refreshing ? "animate-spin" : ""}>↻</span>{refreshing ? "Refreshing…" : "Refresh Live Data"}
-            </button>
-            <div className="text-[9px] text-terminal-text-muted">Data: NSE live · Tech: Yahoo history · Updated {updatedStr}</div>
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3 text-[11px]">
+            <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-terminal-border bg-terminal-card/70"><span className={`w-2 h-2 rounded-full ${open ? "bg-terminal-green" : preopen ? "bg-terminal-yellow" : "bg-terminal-red"} status-dot`} /><span className="text-terminal-text-muted">NSE</span><span className="font-semibold text-terminal-text">{data.marketStatus.nseStatus}</span></div>
+            <div className="hidden lg:block h-7 w-px bg-terminal-border" />
+            <div className="px-2.5 py-1.5 rounded-lg border border-terminal-border bg-terminal-card/50"><span className="text-terminal-text-muted mr-1.5">NIFTY 50</span><span className="font-mono font-semibold text-terminal-text">{data.nifty50Level.toLocaleString("en-IN")}</span><ChangeIndicator value={data.nifty50Change} className="ml-1.5" /></div>
+            <div className="px-2.5 py-1.5 rounded-lg border border-terminal-border bg-terminal-card/50"><span className="text-terminal-text-muted mr-1.5">AVG MKT</span><ChangeIndicator value={data.avgMarketChange} /></div>
+            <div className="hidden xl:block text-terminal-text-muted font-mono">{dateStr} · {timeStr}</div>
+            <div className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[10px] font-bold tracking-wide ${data.is230PM ? "border-terminal-green/30 bg-terminal-green/10 text-terminal-green pulse-glow" : "border-terminal-border bg-terminal-card/60 text-terminal-text-muted"}`}><span>⏰</span> 2:30 PM {data.is230PM ? "ACTIVE" : "STANDBY"}</div>
+            <button type="button" onClick={onRefresh} disabled={refreshing} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-blue-500/35 bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 disabled:opacity-50 transition-colors font-semibold"><span className={refreshing ? "animate-spin" : ""}>↻</span>{refreshing ? "Refreshing" : "Refresh"}</button>
           </div>
         </div>
+        <div className="mt-2.5 flex items-center justify-between gap-3 text-[9px] text-terminal-text-muted"><span>Market data: NSE live · Historical technicals: Yahoo Finance · No simulated market values</span><span className="hidden md:inline">Last validated update: {updatedStr}</span></div>
       </div>
     </header>
   );
